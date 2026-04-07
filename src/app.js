@@ -38,7 +38,7 @@ app.post("/api/cv/upload", upload.single("cv"), async (req, res) => {
 app.post("/api/cv/search", async (req, res) => {
     try {
         const { query } = req.body;
-        const results = await searchRelevantChunks(query, 5, 0.7);
+        const results = await searchRelevantChunks(query, 5, 0.8);
 
         res.json({ results, count: results.length });
     } catch (error) {
@@ -60,11 +60,11 @@ app.post("/api/cv/ask", async (req, res) => {
             messages: [
                 {
                     role: "system",
-                    content: "Jawab hanya berdasarkan konteks CV yang diberikan. Jika tidak cukup informasi, katakan tidak cukup informasi.",
+                    content: "Answer only based on the provided CV context. If there is not enough information, say there is not enough information.",
                 },
                 {
                     role: "user",
-                    content: `Konteks:\n${context}\n\nPertanyaan: ${question}`,
+                    content: `Context:\n${context}\n\nQuestion: ${question}`,
                 },
             ],
         });
