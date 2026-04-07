@@ -37,8 +37,8 @@ app.post("/api/cv/upload", upload.single("cv"), async (req, res) => {
 
 app.post("/api/cv/search", async (req, res) => {
     try {
-        const { query } = req.body;
-        const results = await searchRelevantChunks(query, 5, 0.8);
+        const { query, threshold = 1.0 } = req.body;
+        const results = await searchRelevantChunks(query, 5, threshold);
 
         res.json({ results, count: results.length });
     } catch (error) {
