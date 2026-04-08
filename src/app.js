@@ -1,9 +1,9 @@
 import express from "express";
 import multer from "multer";
 import dotenv from "dotenv";
-import fs from "fs";
+import { pool } from "./db.js";
 import { extractPdfText } from "./cvParser.js";
-import { storeDocumentWithChunks, searchRelevantChunks } from "./ragService.js";
+import { storeChunksForExistingDocument, searchRelevantChunks, storeCandidateMetadata, hybridCandidateSearch } from "./ragService.js";
 import { openai } from "./openai.js";
 
 dotenv.config();
@@ -15,23 +15,22 @@ const upload = multer({ dest: "uploads/" });
 
 app.post("/api/cv/upload", upload.single("cv"), async (req, res) => {
     try {
-        if (!req.file) {
-            return res.status(400).json({ error: "No file uploaded. Send a PDF using the 'cv' field as multipart/form-data." });
-        }
-        const text = await extractPdfText(req.file.path);
-        const result = await storeDocumentWithChunks(req.file.originalname, text);
+        const rawText = await extractPdfText(req.file.path);
+
+        const result = await pool.query(
+            `INSERT INTO cv_documents (file_name, raw_text, processing_status)
+       VALUES ($1, $2, 'UPLOADED')
+       RETURNING id, file_name, processing_status`,
+            [req.file.originalname, rawText]
+        );
 
         res.json({
             success: true,
-            fileName: req.file.originalname,
-            ...result,
+            document: result.rows[0],
         });
     } catch (error) {
+        console.error("Error processing CV:", error);
         res.status(500).json({ error: error.message });
-    } finally {
-        if (req.file?.path) {
-            fs.unlink(req.file.path, () => { });
-        }
     }
 });
 
@@ -78,6 +77,99 @@ app.post("/api/cv/ask", async (req, res) => {
     }
 });
 
+app.post("/api/cv/:documentId/process", async (req, res) => {
+    const { documentId } = req.params;
+
+    try {
+        const docResult = await pool.query(
+            `SELECT * FROM cv_documents WHERE id = $1`,
+            [documentId]
+        );
+
+        if (docResult.rows.length === 0) {
+            return res.status(404).json({ error: "Document not found" });
+        }
+
+        const document = docResult.rows[0];
+
+        await pool.query(
+            `UPDATE cv_documents
+       SET processing_status = 'PROCESSING', processing_error = NULL
+       WHERE id = $1`,
+            [documentId]
+        );
+
+        try {
+            const chunkInfo = await storeChunksForExistingDocument(
+                documentId,
+                document.raw_text
+            );
+
+            const metadata = await storeCandidateMetadata(
+                documentId,
+                document.raw_text
+            );
+
+            await pool.query(
+                `UPDATE cv_documents
+         SET processing_status = 'COMPLETED'
+         WHERE id = $1`,
+                [documentId]
+            );
+
+            res.json({
+                success: true,
+                message: "Document processed successfully",
+                chunkInfo,
+                metadata,
+            });
+        } catch (processingError) {
+            await pool.query(
+                `UPDATE cv_documents
+         SET processing_status = 'FAILED', processing_error = $2
+         WHERE id = $1`,
+                [documentId, processingError.message]
+            );
+
+            throw processingError;
+        }
+    } catch (error) {
+        console.error("Error processing document:", error);
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.get("/api/cv/:documentId/status", async (req, res) => {
+    try {
+        const { documentId } = req.params;
+
+        const result = await pool.query(
+            `SELECT id, file_name, processing_status, processing_error, created_at
+       FROM cv_documents
+       WHERE id = $1`,
+            [documentId]
+        );
+
+        if (result.rows.length === 0) {
+            return res.status(404).json({ error: "Document not found" });
+        }
+
+        res.json({ document: result.rows[0] });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+app.post("/api/candidates/hybrid-search", async (req, res) => {
+    try {
+        const results = await hybridCandidateSearch(req.body);
+        res.json({ results });
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
 app.listen(process.env.PORT, () => {
     console.log(`Server running on port ${process.env.PORT}`);
 });
+
